@@ -1,14 +1,15 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, status
+from pydantic import BaseModel
 
 app = FastAPI(title="Payment Service")
 
-class paymentResponse(BaseModel):
+class PaymentResponse(BaseModel):
     payment_id: int
     status: str
     order_id: int
     amount: float
 
-class paymentRequest(BaseModel):
+class PaymentRequest(BaseModel):
     order_id: int
     amount: float
 
@@ -22,9 +23,10 @@ def get_payment(payment_id: int):
 
 
 
-@app.post("/payments", response_model=paymentResponse, status_code=status.HTTP_201_CREATED)
-def create_payment(payment: paymentRequest):
-    return paymentResponse(payment_id=1, status="created")
+
+@app.post("/payments", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
+def create_payment(payment: PaymentRequest):
+    return PaymentResponse(payment_id=1, status="created", order_id=payment.order_id, amount=payment.amount)
 
 
 

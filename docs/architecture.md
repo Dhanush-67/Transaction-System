@@ -63,16 +63,20 @@ Reservation
 - endpoints
   - Get /items/{id}
   - Post /reservations
+  - Post /reservations/{reservation_id}/commit
+  - Post /reservations/{reservation_id}/release
 
 Happy-path transaction flow
 
 1. Client sends POST /orders
 2. Order Service creates a new order with status PENDING
 3. Order Service asks Inventory Service to reserve the requested items
-4. Inventory Service reserves the items and returns success
+4. Inventory Service checks availability and creates the reservation
 5. Order Service asks Payment Service to process payment
 6. Payment Service processes payment and returns success
-7. Order Service marks the order as COMPLETED
+7. Order Service tells Inventory Service to commit the reservation
+8. Inventory Service reduces available stock and clears the reserved quantity
+9. Order Service marks the order as COMPLETED
 
 <!-- Order Service = owns the business workflow
 Payment Service = owns payment state
