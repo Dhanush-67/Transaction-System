@@ -62,7 +62,7 @@ def create_reservation(reservation: ReservationRequest, db: Session = Depends(ge
             detail="Inventory item not found"
         )
 
-    remaining_quantity = item.available_quantity - item.reserved_quantity
+    remaining_stock = item.available_quantity - item.reserved_quantity
 
     if reservation.quantity > remaining_stock:
         raise HTTPException(
@@ -71,6 +71,7 @@ def create_reservation(reservation: ReservationRequest, db: Session = Depends(ge
         )
 
     item.reserved_quantity += reservation.quantity
+
     new_reservation = Reservation(
         product_id=reservation.product_id,
         quantity=reservation.quantity,
@@ -80,6 +81,7 @@ def create_reservation(reservation: ReservationRequest, db: Session = Depends(ge
     db.add(new_reservation)
     db.commit()
     db.refresh(new_reservation)
+
     return ReservationResponse(
         reservation_id=new_reservation.id,
         status=new_reservation.status,
@@ -89,18 +91,81 @@ def create_reservation(reservation: ReservationRequest, db: Session = Depends(ge
     )
 
 @app.post("/reservations/{reservation_id}/commit")
-def commit_reservation(reservation_id: int):
+def commit_reservation(reservation_id: int, db: Session = Depends(get_db)):
+    reservation = db.get(Reservation, reservation_id)
+
+    if reservation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Reservation not found"
+        )
+
+    if reservation.status != "RESERVED":
+        raise HTTPException(
+            status_code=400,
+            detail="Reservation is not active"
+        )
+
+    item = db.get(InventoryItem, reservation.product_id)
+
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Inventory item not found"
+        )
+
+    if reservation.quantity > item.reserved_quantity:
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough reserved inventory to commit"
+        )
+
+    item.reserved_quantity -= reservation.quantity
+    item.available_quantity -= reservation.quantity
+    reservation.status = "COMMITTED"
+
+    db.commit()
+    db.refresh(reservation)
+
     return {
-        "reservation_id": reservation_id,
-        "status": "COMMITTED"
+        "reservation_id": reservation.id,
+        "status": reservation.status
     }
 
 
 @app.post("/reservations/{reservation_id}/release")
-def release_reservation(reservation_id: int):
+def release_reservation(reservation_id: int, db: Session = Depends(get_db)):
+    reservation = db.get(Reservation, reservation_id)
+
+    if reservation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Reservation not found"
+        )
+
+    if reservation.status != "RESERVED":
+        raise HTTPException(
+            status_code=400,
+            detail="Reservation is not active"
+        )
+
+    item = db.get(InventoryItem, reservation.product_id)
+
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Inventory item not found"
+        )
+
+    item.reserved_quantity -= reservation.quantity
+    reservation.status = "RELEASED"
+
+    db.commit()
+    db.refresh(reservation)
+
     return {
-        "reservation_id": reservation_id,
-        "status": "RELEASED"
+        "reservation_id": reservation.id,
+        "status": reservation.status
     }
 
 
