@@ -81,3 +81,17 @@ Happy-path transaction flow
 <!-- Order Service = owns the business workflow
 Payment Service = owns payment state
 Inventory Service = owns inventory/reservation state -->
+
+POST /orders
+↓
+Create PENDING order
+↓
+Call Inventory Service
+↓
+Reserve inventory
+↓
+Call Payment Service
+↓
+Commit inventory
+↓
+Order → COMPLETED

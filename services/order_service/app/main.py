@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 from services.order_service.app.database import get_db
 from services.order_service.app.models import Order
 
+import httpx
+
 app = FastAPI(title="Order Service")
 
 class OrderResponse(BaseModel):
@@ -13,9 +15,14 @@ class OrderResponse(BaseModel):
     customer_id: int
     amount: float
 
+class OrderItem(BaseModel):
+    product_id: int
+    quantity: int
+
 class OrderRequest(BaseModel):
     customer_id: int
     amount: float
+    item: OrderItem
 
 
 @app.get("/health")
@@ -37,4 +44,37 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
     db.add(new_order)
     db.commit()
     db.refresh(new_order)
+
+    inventory_response = httpx.post(
+    "http://localhost:8002/reservations",
+    json={
+        "product_id": order.item.product_id,
+        "quantity": order.item.quantity,
+        "order_id": new_order.id,
+    },
+    )
+
+    if inventory_response.status_code != status.HTTP_201_CREATED:
+        new_order.status = "FAILED"
+        db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not reserve inventory"
+        )
+
+    reservation_data = inventory_response.json()
+    reservation_id = reservation_data["reservation_id"]
+
+    payment_response = httpx.post(
+        "http://localhost:8003/payments",
+        json={
+            "order_id": new_order.id,
+            "amount": new_order.amount,
+        }
+    )
+
+    print(payment_response.status_code)
+    print(payment_response.json())
+
     return OrderResponse(order_id=new_order.id, status=new_order.status, customer_id=order.customer_id, amount=order.amount)
