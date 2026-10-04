@@ -74,7 +74,26 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
         }
     )
 
-    print(payment_response.status_code)
-    print(payment_response.json())
+    payment_data = payment_response.json()
+
+    if payment_data["status"] == "SUCCEEDED":
+        commit_response = httpx.post(
+        f"http://localhost:8002/reservations/{reservation_id}/commit"
+        )
+
+        if commit_response.status_code == status.HTTP_200_OK:
+            new_order.status = "COMPLETED"
+            db.commit()
+            db.refresh(new_order)
+
+    else:
+        release_response = httpx.post(
+            f"http://localhost:8002/reservations/{reservation_id}/release"
+        )
+        new_order.status = "FAILED"
+        db.commit()
+        db.refresh(new_order)
+
+    
 
     return OrderResponse(order_id=new_order.id, status=new_order.status, customer_id=order.customer_id, amount=order.amount)

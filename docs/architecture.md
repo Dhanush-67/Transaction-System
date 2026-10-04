@@ -82,16 +82,22 @@ Happy-path transaction flow
 Payment Service = owns payment state
 Inventory Service = owns inventory/reservation state -->
 
-POST /orders
+Client
 ↓
-Create PENDING order
+Order Service
 ↓
-Call Inventory Service
+create PENDING order
 ↓
-Reserve inventory
+Inventory Service
 ↓
-Call Payment Service
+reserve inventory
 ↓
-Commit inventory
+Payment Service
 ↓
-Order → COMPLETED
+process payment
+↓
+Inventory Service
+↓
+commit reservation
+↓
+Order = COMPLETED

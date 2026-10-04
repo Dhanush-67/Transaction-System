@@ -22,6 +22,8 @@ python -m uvicorn services.name_service.app.main:app --reload --port 8001
 
     Apply migrations:
     alembic upgrade head (Do this from inside the service folder containing the services alembic init file)
+    For payment migrations, run **from the repository root** with the payment configuration:
+    alembic -c services/payment_service/alembic.ini upgrade head
 
 Installing a new package:
 pip install ...
