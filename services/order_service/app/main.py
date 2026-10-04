@@ -40,19 +40,29 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
 
 @app.post("/orders", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 def create_order(order: OrderRequest, db: Session = Depends(get_db)):
-    new_order = Order(customer_id=order.customer_id, amount=order.amount, status="Pending")
+    new_order = Order(customer_id=order.customer_id, amount=order.amount, status="PENDING")
     db.add(new_order)
     db.commit()
     db.refresh(new_order)
 
-    inventory_response = httpx.post(
-    "http://localhost:8002/reservations",
-    json={
-        "product_id": order.item.product_id,
-        "quantity": order.item.quantity,
-        "order_id": new_order.id,
-    },
-    )
+    try:
+        inventory_response = httpx.post(
+        "http://localhost:8002/reservations",
+        json={
+            "product_id": order.item.product_id,
+            "quantity": order.item.quantity,
+            "order_id": new_order.id,
+        },
+        )
+    except httpx.RequestError as e:
+        new_order.status = "FAILED"
+        db.commit()
+        db.refresh(new_order)
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Inventory service unavailable"
+        )
 
     if inventory_response.status_code != status.HTTP_201_CREATED:
         new_order.status = "FAILED"
@@ -93,7 +103,6 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
         new_order.status = "FAILED"
         db.commit()
         db.refresh(new_order)
-
     
 
     return OrderResponse(order_id=new_order.id, status=new_order.status, customer_id=order.customer_id, amount=order.amount)

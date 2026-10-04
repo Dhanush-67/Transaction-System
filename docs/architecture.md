@@ -82,22 +82,28 @@ Happy-path transaction flow
 Payment Service = owns payment state
 Inventory Service = owns inventory/reservation state -->
 
-Client
-↓
-Order Service
-↓
-create PENDING order
-↓
-Inventory Service
-↓
-reserve inventory
-↓
-Payment Service
-↓
-process payment
-↓
-Inventory Service
-↓
-commit reservation
-↓
-Order = COMPLETED
+<!-- prettier-ignore -->
+```text
+                  reserve fails
+                ┌──────────────→ FAILED
+                │
+PENDING → reserve
+                │
+                └→ payment
+                     │
+                     ├─ payment fails
+                     │      ↓
+                     │   release inventory
+                     │      ↓
+                     │    FAILED
+                     │
+                     └─ payment succeeds
+                            ↓
+                         commit
+                          /   \
+                    success   failure
+                       ↓         ↓
+                  COMPLETED    refund
+                                ↓
+                              FAILED
+
