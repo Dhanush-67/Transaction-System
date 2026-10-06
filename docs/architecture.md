@@ -107,3 +107,28 @@ PENDING → reserve
                                 ↓
                               FAILED
 
+
+Create order
+    ↓
+Reserve inventory
+    ├─ network failure → FAILED
+    ├─ reservation rejected → FAILED
+    ↓
+Process payment
+    ├─ unavailable
+    │     ↓
+    │   release inventory
+    │     ├─ success → FAILED
+    │     └─ failure → PENDING_COMPENSATION
+    │
+    ├─ payment failed
+    │     ↓
+    │   release inventory
+    │     ├─ success → FAILED
+    │     └─ failure → PENDING_COMPENSATION
+    │
+    └─ payment succeeded
+          ↓
+       commit inventory
+
+

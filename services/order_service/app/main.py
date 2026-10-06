@@ -76,13 +76,33 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
     reservation_data = inventory_response.json()
     reservation_id = reservation_data["reservation_id"]
 
-    payment_response = httpx.post(
-        "http://localhost:8003/payments",
-        json={
-            "order_id": new_order.id,
-            "amount": new_order.amount,
-        }
-    )
+    try:
+        payment_response = httpx.post(
+            "http://localhost:8003/payments",
+            json={
+                "order_id": new_order.id,
+                "amount": new_order.amount,
+            }
+        )
+
+    except httpx.RequestError:
+        try:
+            httpx.post(
+                f"http://localhost:8002/reservations/{reservation_id}/release"
+            )
+
+            new_order.status = "FAILED"
+
+        except httpx.RequestError:
+            new_order.status = "PENDING_COMPENSATION"
+
+        db.commit()
+        db.refresh(new_order)
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Payment service unavailable"
+        )
 
     payment_data = payment_response.json()
 
@@ -97,12 +117,19 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
             db.refresh(new_order)
 
     else:
-        release_response = httpx.post(
-            f"http://localhost:8002/reservations/{reservation_id}/release"
-        )
-        new_order.status = "FAILED"
-        db.commit()
-        db.refresh(new_order)
+        try:
+            release_response = httpx.post(
+                f"http://localhost:8002/reservations/{reservation_id}/release"
+            )
+            if release_response.status_code == status.HTTP_200_OK:
+                new_order.status = "FAILED"
+            else:
+                new_order.status = "PENDING_COMPENSATION"
+            db.commit()
+            db.refresh(new_order)
+        except httpx.RequestError:
+            new_order.status = "PENDING_COMPENSATION"
+            db.commit()
     
 
     return OrderResponse(order_id=new_order.id, status=new_order.status, customer_id=order.customer_id, amount=order.amount)
