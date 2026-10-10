@@ -92,6 +92,7 @@ def create_reservation(reservation: ReservationRequest, db: Session = Depends(ge
 
 @app.post("/reservations/{reservation_id}/commit", status_code=status.HTTP_200_OK)
 def commit_reservation(reservation_id: int, db: Session = Depends(get_db)):
+
     reservation = db.get(Reservation, reservation_id)
 
     if reservation is None:

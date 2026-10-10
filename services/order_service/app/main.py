@@ -86,15 +86,10 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
         )
 
     except httpx.RequestError:
-        try:
-            httpx.post(
-                f"http://localhost:8002/reservations/{reservation_id}/release"
-            )
-
-            new_order.status = "FAILED"
-
-        except httpx.RequestError:
-            new_order.status = "PENDING_COMPENSATION"
+        release_succeeded = release_reservation(reservation_id)
+        new_order.status = (
+            "FAILED" if release_succeeded else "PENDING_COMPENSATION"
+        )
 
         db.commit()
         db.refresh(new_order)
@@ -104,32 +99,90 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
             detail="Payment service unavailable"
         )
 
+    if not 200 <= payment_response.status_code < 300:
+        release_succeeded = release_reservation(reservation_id)
+
+        new_order.status = (
+            "FAILED" if release_succeeded else "PENDING_COMPENSATION"
+        )
+        db.commit()
+        db.refresh(new_order)
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Payment service returned an unsuccessful response",
+        )
+
     payment_data = payment_response.json()
 
     if payment_data["status"] == "SUCCEEDED":
-        commit_response = httpx.post(
-        f"http://localhost:8002/reservations/{reservation_id}/commit"
-        )
+        payment_id = payment_data["payment_id"]
 
-        if commit_response.status_code == status.HTTP_200_OK:
+        if commit_reservations(reservation_id):
             new_order.status = "COMPLETED"
             db.commit()
             db.refresh(new_order)
 
-    else:
-        try:
-            release_response = httpx.post(
-                f"http://localhost:8002/reservations/{reservation_id}/release"
-            )
-            if release_response.status_code == status.HTTP_200_OK:
+        else:
+            refund_succeeded = False
+            release_succeeded = False
+            #the inventory service failed to commit the reservation, we need to refund the payment
+            try:
+                refund_response = httpx.post(
+                    f"http://localhost:8003/payments/{payment_id}/refund"
+                )
+
+                if refund_response.status_code == status.HTTP_200_OK:
+                    refund_succeeded = True
+
+            except httpx.RequestError:
+                pass
+
+            release_succeeded = release_reservation(reservation_id)
+
+            if refund_succeeded and release_succeeded:
                 new_order.status = "FAILED"
             else:
                 new_order.status = "PENDING_COMPENSATION"
+
             db.commit()
             db.refresh(new_order)
-        except httpx.RequestError:
+
+
+    else:
+
+        release_succeeded = release_reservation(reservation_id)
+
+        if release_succeeded:
+            new_order.status = "FAILED"
+        else:
             new_order.status = "PENDING_COMPENSATION"
-            db.commit()
+
+        db.commit()
+        db.refresh(new_order)
     
 
     return OrderResponse(order_id=new_order.id, status=new_order.status, customer_id=order.customer_id, amount=order.amount)
+
+
+
+def release_reservation(reservation_id: int) -> bool:
+    try:
+        response = httpx.post(
+            f"http://localhost:8002/reservations/{reservation_id}/release"
+        )
+    except httpx.RequestError:
+        return False
+
+    return 200 <= response.status_code < 300
+
+
+def commit_reservations(reservation_id: int) -> bool:
+    try:
+        response = httpx.post(
+            f"http://localhost:8002/reservations/{reservation_id}/commit"
+        )
+    except httpx.RequestError:
+        return False
+
+    return 200 <= response.status_code < 300
