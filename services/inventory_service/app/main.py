@@ -144,6 +144,12 @@ def release_reservation(reservation_id: int, db: Session = Depends(get_db)):
             detail="Reservation not found"
         )
 
+    if reservation.status == "RELEASED":
+        return {
+            "reservation_id": reservation.id,
+            "status": reservation.status,
+        }
+
     if reservation.status != "RESERVED":
         raise HTTPException(
             status_code=400,

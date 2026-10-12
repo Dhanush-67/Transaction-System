@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from fastapi import Depends
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 
 from services.payment_service.app.database import get_db
 from services.payment_service.app.models import Payment
@@ -36,21 +37,59 @@ def get_payment(payment_id: int, db: Session = Depends(get_db)):
 
 
 
-@app.post("/payments", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/payments",
+    response_model=PaymentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_payment(payment: PaymentRequest, db: Session = Depends(get_db)):
-    new_payment = Payment(order_id=payment.order_id, amount=payment.amount, status="PROCESSING")
-    db.add(new_payment)
-    db.commit()
-    db.refresh(new_payment)
+    existing_payment = (
+        db.query(Payment)
+        .filter(Payment.order_id == payment.order_id)
+        .first()
+    )
 
-    new_payment.status = "SUCCEEDED"
-    db.commit()
-    db.refresh(new_payment)
+    if existing_payment is None:
+        new_payment = Payment(
+            order_id=payment.order_id,
+            amount=payment.amount,
+            status="PROCESSING",
+        )
+        db.add(new_payment)
 
-    
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
 
-    return PaymentResponse(payment_id=new_payment.id, status=new_payment.status, order_id=payment.order_id, amount=payment.amount)
+            existing_payment = (
+                db.query(Payment)
+                .filter(Payment.order_id == payment.order_id)
+                .first()
+            )
 
+            if existing_payment is None:
+                raise
+        else:
+            # Only the request that created the payment processes it.
+            db.refresh(new_payment)
+            new_payment.status = "SUCCEEDED"
+            db.commit()
+            db.refresh(new_payment)
+            existing_payment = new_payment
+
+    if existing_payment.amount != payment.amount:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Existing payment has a different amount",
+        )
+
+    return PaymentResponse(
+        payment_id=existing_payment.id,
+        status=existing_payment.status,
+        order_id=existing_payment.order_id,
+        amount=existing_payment.amount,
+    )
 
 @app.post("/payments/{payment_id}/refund")
 def refund_payment(payment_id: int, db: Session = Depends(get_db)):
@@ -61,6 +100,12 @@ def refund_payment(payment_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Payment not found"
         )
+
+    if payment.status == "REFUNDED":
+        return{
+            "payment_id": payment.id,
+            "status": payment.status
+        }
 
     if payment.status != "SUCCEEDED":
         raise HTTPException(
@@ -77,3 +122,27 @@ def refund_payment(payment_id: int, db: Session = Depends(get_db)):
         "payment_id": payment.id,
         "status": payment.status
     }
+
+@app.get("/payments/by-order/{order_id}", response_model=PaymentResponse)
+def get_payment_by_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+):
+    payment = (
+        db.query(Payment)
+        .filter(Payment.order_id == order_id)
+        .first()
+    )
+
+    if payment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment not found for this order",
+        )
+
+    return PaymentResponse(
+        payment_id=payment.id,
+        status=payment.status,
+        order_id=payment.order_id,
+        amount=payment.amount,
+    )

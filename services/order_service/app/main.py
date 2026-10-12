@@ -76,6 +76,9 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
     reservation_data = inventory_response.json()
     reservation_id = reservation_data["reservation_id"]
 
+    new_order.reservation_id = reservation_id
+    db.commit()
+
     try:
         payment_response = httpx.post(
             "http://localhost:8003/payments",
@@ -86,37 +89,30 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
         )
 
     except httpx.RequestError:
-        release_succeeded = release_reservation(reservation_id)
-        new_order.status = (
-            "FAILED" if release_succeeded else "PENDING_COMPENSATION"
-        )
-
+        new_order.status = "PAYMENT_UNKNOWN"
         db.commit()
-        db.refresh(new_order)
 
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Payment service unavailable"
+            detail="Payment outcome unknown; order is awaiting recovery",
         )
 
     if not 200 <= payment_response.status_code < 300:
-        release_succeeded = release_reservation(reservation_id)
-
-        new_order.status = (
-            "FAILED" if release_succeeded else "PENDING_COMPENSATION"
-        )
+        new_order.status = "PAYMENT_UNKNOWN"
         db.commit()
-        db.refresh(new_order)
 
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Payment service returned an unsuccessful response",
+            detail="Payment outcome unresolved; order is awaiting recovery",
         )
 
     payment_data = payment_response.json()
+    payment_id = payment_data["payment_id"]
+
+    new_order.payment_id = payment_id
+    db.commit()
 
     if payment_data["status"] == "SUCCEEDED":
-        payment_id = payment_data["payment_id"]
 
         if commit_reservations(reservation_id):
             new_order.status = "COMPLETED"
@@ -124,42 +120,50 @@ def create_order(order: OrderRequest, db: Session = Depends(get_db)):
             db.refresh(new_order)
 
         else:
-            refund_succeeded = False
-            release_succeeded = False
-            #the inventory service failed to commit the reservation, we need to refund the payment
+            # Save the cleanup plan before making either request.
+            new_order.status = "PENDING_COMPENSATION"
+            new_order.refund_pending = True
+            new_order.release_pending = True
+            db.commit()
+
             try:
                 refund_response = httpx.post(
                     f"http://localhost:8003/payments/{payment_id}/refund"
                 )
 
                 if refund_response.status_code == status.HTTP_200_OK:
-                    refund_succeeded = True
+                    new_order.refund_pending = False
+                    db.commit()
 
             except httpx.RequestError:
-                pass
+                pass  # Leave refund_pending=True for recovery.
 
-            release_succeeded = release_reservation(reservation_id)
+            if release_reservation(reservation_id):
+                new_order.release_pending = False
+                db.commit()
 
-            if refund_succeeded and release_succeeded:
+            if not new_order.refund_pending and not new_order.release_pending:
                 new_order.status = "FAILED"
-            else:
-                new_order.status = "PENDING_COMPENSATION"
+                db.commit()
 
-            db.commit()
             db.refresh(new_order)
 
 
-    else:
-
-        release_succeeded = release_reservation(reservation_id)
-
-        if release_succeeded:
-            new_order.status = "FAILED"
-        else:
-            new_order.status = "PENDING_COMPENSATION"
-
+    elif payment_data["status"] == "FAILED":
+        new_order.status = "PENDING_COMPENSATION"
+        new_order.release_pending = True
         db.commit()
+
+        if release_reservation(reservation_id):
+            new_order.release_pending = False
+            new_order.status = "FAILED"
+            db.commit()
+
         db.refresh(new_order)
+
+    else:
+        new_order.status = "PAYMENT_UNKNOWN"
+        db.commit() 
     
 
     return OrderResponse(order_id=new_order.id, status=new_order.status, customer_id=order.customer_id, amount=order.amount)
@@ -186,3 +190,59 @@ def commit_reservations(reservation_id: int) -> bool:
         return False
 
     return 200 <= response.status_code < 300
+
+
+def resolve_unknown_payment(order: Order, db: Session) -> None:
+    try:
+        response = httpx.get(
+            f"http://localhost:8003/payments/by-order/{order.id}"
+        )
+    except httpx.RequestError:
+        return  # Payment unavailable. Check again later.
+
+    if response.status_code != status.HTTP_200_OK:
+        return  # Includes 404: no payment visible yet.
+
+    payment_data = response.json()
+    payment_status = payment_data["status"]
+
+    order.payment_id = payment_data["payment_id"]
+
+    if payment_status == "SUCCEEDED":
+        order.refund_pending = True
+        order.release_pending = True
+        order.status = "PENDING_COMPENSATION"
+
+    elif payment_status in ("FAILED", "REFUNDED"):
+        order.refund_pending = False
+        order.release_pending = True
+        order.status = "PENDING_COMPENSATION"
+
+    # PROCESSING leaves the order as PAYMENT_UNKNOWN.
+    db.commit()
+
+
+def recover_compensation(order: Order, db: Session) -> None:
+    if order.status != "PENDING_COMPENSATION":
+        return
+
+    if order.refund_pending and order.payment_id is not None:
+        try:
+            response = httpx.post(
+                f"http://localhost:8003/payments/{order.payment_id}/refund"
+            )
+        except httpx.RequestError:
+            pass  # Keep the flag True for another attempt.
+        else:
+            if response.status_code == status.HTTP_200_OK:
+                order.refund_pending = False
+                db.commit()
+
+    if order.release_pending and order.reservation_id is not None:
+        if release_reservation(order.reservation_id):
+            order.release_pending = False
+            db.commit()
+
+    if not order.refund_pending and not order.release_pending:
+        order.status = "FAILED"
+        db.commit()

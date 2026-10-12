@@ -7,7 +7,7 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    order_id: Mapped[int]
+    order_id: Mapped[int] = mapped_column(unique=True)
     amount: Mapped[float]
     status: Mapped[str]
 
