@@ -246,3 +246,29 @@ def recover_compensation(order: Order, db: Session) -> None:
     if not order.refund_pending and not order.release_pending:
         order.status = "FAILED"
         db.commit()
+
+
+@app.post("/orders/{order_id}/recover", response_model=OrderResponse)
+def recover_order(order_id: int, db: Session = Depends(get_db)):
+    order = db.get(Order, order_id)
+
+    if order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Order not found",
+        )
+
+    if order.status == "PAYMENT_UNKNOWN":
+        resolve_unknown_payment(order, db)
+
+    if order.status == "PENDING_COMPENSATION":
+        recover_compensation(order, db)
+
+    db.refresh(order)
+
+    return OrderResponse(
+        order_id=order.id,
+        status=order.status,
+        customer_id=order.customer_id,
+        amount=order.amount,
+    )
