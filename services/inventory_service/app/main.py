@@ -1,5 +1,5 @@
 from fastapi import FastAPI, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -20,7 +20,7 @@ class InventoryItemRequest(BaseModel):
 
 class ReservationRequest(BaseModel):
     product_id: int
-    quantity: int
+    quantity: int = Field(gt = 0)
     order_id: int
 
 class ReservationResponse(BaseModel):
@@ -54,7 +54,12 @@ def get_item(product_id: int, db: Session = Depends(get_db)):
 @app.post("/reservations", response_model=ReservationResponse, status_code=status.HTTP_201_CREATED)
 def create_reservation(reservation: ReservationRequest, db: Session = Depends(get_db)):
 
-    item = db.get(InventoryItem, reservation.product_id)
+    item = (
+        db.query(InventoryItem)
+        .filter(InventoryItem.id == reservation.product_id)
+        .with_for_update()
+        .first()
+    )
 
     if item is None:
         raise HTTPException(
@@ -93,7 +98,12 @@ def create_reservation(reservation: ReservationRequest, db: Session = Depends(ge
 @app.post("/reservations/{reservation_id}/commit", status_code=status.HTTP_200_OK)
 def commit_reservation(reservation_id: int, db: Session = Depends(get_db)):
 
-    reservation = db.get(Reservation, reservation_id)
+    reservation = (
+        db.query(Reservation)
+        .filter(Reservation.id == reservation_id)
+        .with_for_update()
+        .first()
+    )
 
     if reservation is None:
         raise HTTPException(
@@ -101,13 +111,24 @@ def commit_reservation(reservation_id: int, db: Session = Depends(get_db)):
             detail="Reservation not found"
         )
 
+    if reservation.status == "COMMITTED":
+        return {
+            "reservation_id": reservation.id,
+            "status": reservation.status,
+        }
+
     if reservation.status != "RESERVED":
         raise HTTPException(
             status_code=400,
             detail="Reservation is not active"
         )
 
-    item = db.get(InventoryItem, reservation.product_id)
+    item = (
+        db.query(InventoryItem)
+        .filter(InventoryItem.id == reservation.product_id)
+        .with_for_update()
+        .first()    
+    )
 
     if item is None:
         raise HTTPException(
@@ -136,7 +157,12 @@ def commit_reservation(reservation_id: int, db: Session = Depends(get_db)):
 
 @app.post("/reservations/{reservation_id}/release")
 def release_reservation(reservation_id: int, db: Session = Depends(get_db)):
-    reservation = db.get(Reservation, reservation_id)
+    reservation = (
+        db.query(Reservation)
+        .filter(Reservation.id == reservation_id)
+        .with_for_update()
+        .first()
+    )
 
     if reservation is None:
         raise HTTPException(
@@ -152,11 +178,16 @@ def release_reservation(reservation_id: int, db: Session = Depends(get_db)):
 
     if reservation.status != "RESERVED":
         raise HTTPException(
-            status_code=400,
-            detail="Reservation is not active"
+            status_code=409,
+            detail="Only an active reservation can be released"
         )
 
-    item = db.get(InventoryItem, reservation.product_id)
+    item = (
+        db.query(InventoryItem)
+        .filter(InventoryItem.id == reservation.product_id)
+        .with_for_update()
+        .first()
+    )
 
     if item is None:
         raise HTTPException(
@@ -174,6 +205,27 @@ def release_reservation(reservation_id: int, db: Session = Depends(get_db)):
         "reservation_id": reservation.id,
         "status": reservation.status
     }
+
+
+@app.get("/reservations/{reservation_id}")
+def get_reservation(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+):
+    reservation = db.get(Reservation, reservation_id)
+
+    if reservation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Reservation not found",
+        )
+
+    return {
+        "reservation_id": reservation.id,
+        "order_id": reservation.order_id,
+        "status": reservation.status,
+    }
+
 
 
 
