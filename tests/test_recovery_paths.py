@@ -56,12 +56,13 @@ class RecoveryPathsTest(unittest.TestCase):
         self.release_unavailable = False
         self.calls = []
 
-    def seed(self, reservation_status):
+    def seed(self, reservation_status, order_status="PENDING_COMPENSATION",
+        refund_pending=True, release_pending=True):
         with self.sessions[0]() as db:
             db.add(Order(
-                id=1, customer_id=1, amount=25, status="PENDING_COMPENSATION",
+                id=1, customer_id=1, amount=25, status=order_status,
                 reservation_id=1, payment_id=1,
-                refund_pending=True, release_pending=True,
+                refund_pending=refund_pending, release_pending=release_pending,
             ))
             db.commit()
         with self.sessions[1]() as db:
@@ -156,6 +157,62 @@ class RecoveryPathsTest(unittest.TestCase):
             "FAILED", False, False, "RELEASED", 10, 0, "REFUNDED",
         ))
 
+    def test_unknown_payment_success_recovery(self):
+        self.seed(
+            "RESERVED",
+            order_status="PAYMENT_UNKNOWN",
+            refund_pending=False,
+            release_pending=False,
+        )
+
+        self.assertEqual(self.recover_twice(), (
+            "FAILED",
+            False,
+            False,
+            "RELEASED",
+            10,
+            0,
+            "REFUNDED",
+        ))
+
+    def test_payment_404_then_successful_recovery(self):
+        self.seed(
+            "RESERVED",
+            order_status="PAYMENT_UNKNOWN",
+            refund_pending=False,
+            release_pending=False,
+        )
+
+        # Payment exists in our test setup, but make it temporarily
+        # invisible to the recovery endpoint.
+        original_dispatch = self.dispatch
+
+        def dispatch_with_404(method, url, **kwargs):
+            if method == "GET" and "/payments/by-order/" in url:
+                return httpx.Response(404)
+
+            return original_dispatch(method, url, **kwargs)
+
+        with patch.object(
+            httpx, "get",
+            side_effect=lambda url, **kw: dispatch_with_404("GET", url, **kw),
+        ):
+            response = self.order_client.post("/orders/1/recover")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "PAYMENT_UNKNOWN")
+
+        # The 404 must not trigger inventory release or payment refund.
+        self.assertEqual(self.snapshot(), (
+            "PAYMENT_UNKNOWN", False, False,
+            "RESERVED", 10, 1, "SUCCEEDED",
+        ))
+
+        # Payment is now visible. Recovery should finish compensation.
+        self.assertEqual(self.recover_twice(), (
+            "FAILED", False, False,
+            "RELEASED", 10, 0, "REFUNDED",
+        ))
 
 if __name__ == "__main__":
     unittest.main()
