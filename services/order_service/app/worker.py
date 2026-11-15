@@ -1,9 +1,6 @@
-import time
 import logging
 import json
 import pika
-
-from sqlalchemy import select
 
 from services.order_service.app.database import SessionLocal
 from services.order_service.app.models import Order
@@ -27,6 +24,16 @@ def run_worker():
         durable=True
     )
 
+    channel.queue_declare(
+        queue="order_recovery_retry",
+        durable=True,
+        arguments={
+            "x-message-ttl": 10000,
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": "order_recovery",
+        }
+    )
+
     channel.basic_qos(prefetch_count=1)
 
     channel.basic_consume(
@@ -35,39 +42,50 @@ def run_worker():
         auto_ack=False
     )
 
+    channel.confirm_delivery()
     channel.start_consuming()
 
 
 def process_message(ch, method, properties, body):
     message = json.loads(body)
     order_id = message["order_id"]
-    logger.info("Recovery worker started")
 
-    # 1. Query PostgreSQL for this order
+    recovery_complete = False
+
     try:
         with SessionLocal() as db:
             order = db.get(Order, order_id)
 
             if order is None:
-                continue
+                recovery_complete = True
 
-            if order.status == "PAYMENT_UNKNOWN":
-                resolve_unknown_payment(order, db)
+            else:
+                if order.status == "PAYMENT_UNKNOWN":
+                    resolve_unknown_payment(order, db)
 
-            if order.status == "PENDING_COMPENSATION":
-                recover_compensation(order, db)
-    
+                if order.status == "PENDING_COMPENSATION":
+                    recover_compensation(order, db)
+
+                if order.status in ("COMPLETED", "FAILED"):
+                    recovery_complete = True
+
     except Exception:
-        logger.exception(
-            "Failed to recover order %s",
-            order_id
-        )
+        logger.exception("Failed to recover order %s", order_id)
 
-    # 2. Run the appropriate recovery functions
-
-    # 3. Check whether the order is terminal
-
-    # 4. ACK if terminal, otherwise schedule retry
+    if recovery_complete:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        logger.info("Recovery complete for order %s", order_id)
+    else:
+        ch.basic_publish(
+                exchange="",
+                routing_key="order_recovery_retry",
+                body=json.dumps({"order_id": order_id}),
+                properties=pika.BasicProperties(
+                    delivery_mode=2,
+                ),
+                mandatory=True,
+            )
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
 if __name__ == "__main__":
     run_worker()
