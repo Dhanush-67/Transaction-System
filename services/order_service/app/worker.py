@@ -1,5 +1,7 @@
 import time
 import logging
+import json
+import pika
 
 from sqlalchemy import select
 
@@ -13,50 +15,59 @@ from services.order_service.app.recovery import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 def run_worker():
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host="localhost")
+    )
+
+    channel = connection.channel()
+
+    channel.queue_declare(
+        queue="order_recovery",
+        durable=True
+    )
+
+    channel.basic_qos(prefetch_count=1)
+
+    channel.basic_consume(
+        queue="order_recovery",
+        on_message_callback=process_message,
+        auto_ack=False
+    )
+
+    channel.start_consuming()
+
+
+def process_message(ch, method, properties, body):
+    message = json.loads(body)
+    order_id = message["order_id"]
     logger.info("Recovery worker started")
 
-    while True:
-        try:
-            # Discover unfinished orders
-            with SessionLocal() as db:
-                stmt = select(Order.id).where(
-                    Order.status.in_([
-                        "PAYMENT_UNKNOWN",
-                        "PENDING_COMPENSATION"
-                    ])
-                )
+    # 1. Query PostgreSQL for this order
+    try:
+        with SessionLocal() as db:
+            order = db.get(Order, order_id)
 
-                order_ids = db.scalars(stmt).all()
+            if order is None:
+                continue
 
-            logger.info("Found %d unfinished orders", len(order_ids))
+            if order.status == "PAYMENT_UNKNOWN":
+                resolve_unknown_payment(order, db)
 
-            # Recover orders individually
-            for order_id in order_ids:
-                try:
-                    with SessionLocal() as db:
-                        order = db.get(Order, order_id)
+            if order.status == "PENDING_COMPENSATION":
+                recover_compensation(order, db)
+    
+    except Exception:
+        logger.exception(
+            "Failed to recover order %s",
+            order_id
+        )
 
-                        if order is None:
-                            continue
+    # 2. Run the appropriate recovery functions
 
-                        if order.status == "PAYMENT_UNKNOWN":
-                            resolve_unknown_payment(order, db)
+    # 3. Check whether the order is terminal
 
-                        if order.status == "PENDING_COMPENSATION":
-                            recover_compensation(order, db)
-
-                except Exception:
-                    logger.exception(
-                        "Failed to recover order %s",
-                        order_id
-                    )
-
-        except Exception:
-            logger.exception("Failed to query unfinished orders")
-
-        time.sleep(10)
+    # 4. ACK if terminal, otherwise schedule retry
 
 if __name__ == "__main__":
     run_worker()

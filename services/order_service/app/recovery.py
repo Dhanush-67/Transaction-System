@@ -123,7 +123,6 @@ def release_reservation(reservation_id: int) -> bool:
     return 200 <= response.status_code < 300
 
 def commit_reservations(reservation_id: int) -> bool:
-    return False
     try:
         response = httpx.post(
             f"http://localhost:8002/reservations/{reservation_id}/commit"
